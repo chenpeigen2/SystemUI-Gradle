@@ -7,9 +7,9 @@
 - `statusbar/notification/icon/IconManager.kt`：**为一条通知生成并维护它的全部图标视图**（`StatusBarIconView`）——状态栏、底托（shelf）、AOD 多处复用。在 `NotificationRowBinderImpl` 建 row 时 `createIcons` / 更新时 `updateIcons` 触发
 - `StatusBarIconController`（`statusbar/phone/ui/StatusBarIconControllerImpl.java`）：状态栏图标槽位的总控制器（系统图标 + 通知图标 + 静默图标隐藏逻辑）
 - `SilentNotificationStatusIconsVisibilityInteractor`：「在状态栏显示静默通知图标」设置项（NotificationListener 启动时同步 `shouldHideSilentStatusBarIcons`）
-- `statusbar/notification/icon/` 下还有 `icongoing`/`iconooze`? 等子目录按图标类别细分（ongoing、小图标缓存等）
+- `statusbar/notification/icon/` 下还有 `domain/`（图标数量/可见性逻辑，如 `NotificationIconsInteractor`）与 `ui/`（状态栏/AOD 图标槽位的 ViewModel+Binder）两个子目录
 
-数据流：管道 entry 变化 → IconManager 更新图标资源 → StatusBarIconController 重排状态栏槽位。图标数量超限（`config_maxVisibleNotificationIcons` 等）时截断。
+数据流：管道 entry 变化 → IconManager 更新图标资源 → StatusBarIconController 重排状态栏槽位。图标数量超限（`max_notif_static_icons` / `max_notif_icons_on_aod` / `max_notif_icons_on_lockscreen` 等 integer 资源）时截断。
 
 ## 5.2 锁屏
 
@@ -38,7 +38,7 @@
 
 `compose/features/src/com/android/systemui/notifications/ui/`（17 状态）：
 
-- `NotificationPlaceholderStateStorage.kt` / `YSpace.kt`：通知 UI 的 shimmer/占位与布局空间计算——通知栏列表正在向 Compose 迁移的**过渡期设施**（传统 NSSL 与 Compose 并存）
+- `NotificationPlaceholderStateStorage.kt` / `YSpace.kt`：通知栈占位属性存储（栈滚动顶、栈/HUN 可视 Y 区间、alpha，绑定到 NSSL）与 Y 坐标区间数据类——通知栏列表向 Compose 迁移的**过渡期设施**（传统 NSSL 与 Compose 并存）
 - 判断某 UI 是传统 View 还是 Compose 的最快方式：看 `compose/features` 下有没有对应 composable
 
 ## 5.6 本篇小结（本项目落点）

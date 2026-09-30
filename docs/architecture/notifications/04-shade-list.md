@@ -9,7 +9,7 @@
 - 子 View = 各 entry 的 `ExpandableNotificationRow` + section header + footer + shelf（底托）
 - `AmbientState.java`（同包）：布局/动画的全局状态（当前展开高度、速度、跟踪手势等），layout 与动画解耦的关键
 - `ExpandableViewState.java`：每个 child 的目标布局状态（y/高度/z/圆角…），NSSL 据此做 **spring/插值动画驱动**
-- 滚动：`NoOpOverScroller` 自定义滚动器；顶部/底部 over-scroll 物理效果
+- 滚动：`OverScrollerWrapper` 包装系统 `OverScroller`（同包 `NoOpOverScroller` 是 `OverScrollerInterface` 的空实现，用于无滚动场景）；顶部/底部 over-scroll 物理效果
 
 Controller：`stack/` 下的 `NotificationStackScrollLayoutController`（协同手势、展开、锁屏转换）。
 
@@ -17,8 +17,8 @@ Controller：`stack/` 下的 `NotificationStackScrollLayoutController`（协同�
 
 [01 篇](./01-ingress-pipeline.md) §1.6 讲了 `ShadeViewManager`/`NotifStackView`/`NotifViewBarn` 的骨架，本篇补视图侧细节：
 
-1. `NotifStackView`（render 包）把 pipeline 的 `List<PipelineEntry>` diff 成「加哪些 row / 移哪些 row / 顺序怎么变」
-2. `NotifViewBarn.getView(entry)`：有缓存复用 row，没有则**说明 PreparationCoordinator 闸门未放行**（row 还没 inflate）
+1. `collection/render/ShadeViewManager`（经 `NodeSpecBuilder.buildNodeSpec()` 建节点树 + `ShadeViewDiffer.applySpec()` 做 diff）把 pipeline 的 `List<PipelineEntry>` 翻译成「加哪些 row / 移哪些 row / 顺序怎么变」
+2. `NotifViewBarn.requireRowController(entry)`（entry→`NotifViewController` 映射）：有注册则复用，未命中直接报错——说明 PreparationCoordinator 闸门未放行（row 还没 inflate）。Barn 缓存的是 **controller** 而非 row view 本身
 3. row 进 NSSL 前经 `NotificationListContainer`（接口，NSSL 侧实现）适配栈语义（`bindRow`/`getViewParentForNotification`）
 4. `OnAfterRender*` 回调让 coordinator 做渲染后修补（如 `StackCoordinator` 处理 section 位置）
 
@@ -27,7 +27,7 @@ Controller：`stack/` 下的 `NotificationStackScrollLayoutController`（协同�
 通知栏按优先级分段（对话 > 正在运行/提醒 > 静默…），段的定义在管道侧（`NotifSectioner`，01 篇 §1.4），**段头的视图管理在 stack 侧**：
 
 - `stack/NotificationSectionsManager.kt`：持有各 section 的 `SectionHeaderView`，按管道结果增删/排序段头
-- `stack/SectionHeaderView.java` + `render/SectionHeaderController.kt` + `collection/provider/SectionHeaderVisibilityProvider.kt`（是否显示「静默通知」段的开关）
+- `stack/SectionHeaderView.java` + `collection/render/SectionHeaderController.kt`（`SectionHeaderNodeControllerImpl`）+ `collection/provider/SectionHeaderVisibilityProvider.kt`（是否显示「静默通知」段的开关）
 - `NotificationSectionsFeatureManager.kt`：段功能开关（如 conversation section 是否可用）
 - `stack/NotificationSection.java`：旧 section 模型（与 sectioner 对齐使用）
 
@@ -40,7 +40,7 @@ Controller：`stack/` 下的 `NotificationStackScrollLayoutController`（协同�
 
 ## 4.5 Footer 与空态
 
-- `footer/ui/view/FooterView.java` + `FooterViewModel/FooterMessageViewModel/FooterButtonViewModel` + `FooterViewBinder`：**footer 已 Kotlin 化（ViewModel+Binder 模式）**——「清除全部」按钮与状态栏提示文案（如「已隐藏敏感内容」）的展示位
+- `footer/ui/view/FooterView.java` + `FooterViewModel/FooterMessageViewModel/FooterButtonViewModel` + `FooterViewBinder`：footer 采用 **ViewModel+Binder 模式**（四个 VM/Binder 均为 Kotlin；`FooterView` 视图本体仍为 Java）——「清除全部」按钮与状态栏提示文案（如「已隐藏敏感内容」）的展示位
 - 空态（empty shade）：无通知时的引导视图（`emptyshade/` 包 + Compose 化的部分在 `compose/features/` 下，05 篇）
 - `stack/NotificationPriorityBucket.kt`：优先级分桶（影响视觉分组与圆角策略）
 

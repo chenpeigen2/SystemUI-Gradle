@@ -8,7 +8,7 @@
 
 | 层 | 类型 | 语义 | 例子 |
 |---|---|---|---|
-| Condition | `VisualInterruptionCondition` | 全局开关，不看具体通知 | `PeekDisabledSuppressor`（`Settings.Global.HEADS_UP_NOTIFICATIONS_ENABLED`）、电池/演示模式等 |
+| Condition | `VisualInterruptionCondition` | 全局开关，不看具体通知 | `PeekDisabledSuppressor`（`Settings.Global.HEADS_UP_NOTIFICATIONS_ENABLED`）、`PulseDisabledSuppressor`、`PulseBatterySaverSuppressor`（电池省电）等 |
 | Legacy | `NotificationInterruptSuppressor` | 旧式逐通知抑制（兼容层） | 各 subsystem 注册的 suppressor |
 | Filter | `VisualInterruptionFilter` | 逐通知新式过滤 | DND（按 channel 绕过）、锁屏可见性、pocket |
 
@@ -16,7 +16,7 @@
 
 ## 3.2 HeadsUpCoordinator：管道侧的 HUN 大使
 
-`collection/coordinator/HeadsUpCoordinator.kt`（attach 注册 6 类 hook）：
+`collection/coordinator/HeadsUpCoordinator.kt` 在 attach 时注册：5 个管道 hook（见下）＋ `mHeadsUpManager.addListener`、action-click listener、promoted chip tap flow 收集：
 
 ```kotlin
 pipeline.addCollectionListener(mNotifCollectionListener)      // entry 增删改入口
@@ -26,10 +26,10 @@ pipeline.addPromoter(mNotifPromoter)                          // HUN 中的 chil
 pipeline.addNotificationLifetimeExtender(mLifetimeExtender)   // 横幅显示中 retract 不删
 ```
 
-核心状态是 `PostedEntry`（每个 key 一份）：`shouldHeadsUpEver / shouldHeadsUpAgain / wasUpdatedBy / isHeadsUpEntry / isPinnedByUser / isBinding`。流程：
+核心状态是 `PostedEntry`（每个 key 一份）：`wasAdded / wasUpdatedBy / shouldHeadsUpEver / shouldHeadsUpAgain / isFromUserAction / isHeadsUpEntry / isPinnedByUser / isBinding`。流程：
 
-1. entry posted/updated → 问 `VisualInterruptionDecisionProvider` → 记 `PostedEntry`
-2. `onBeforeTransformGroups`：先处理无组的（快路径）；**组边界情形**（group summary HUN、child 继承 parent 的 HUN）在这里解——child 是否该跟着弹、summary 被撤 child 是否顶上，全在此决策
+1. entry posted/updated → 调 `VisualInterruptionDecisionProvider.makeAndLogHeadsUpDecision` → 记 `PostedEntry`
+2. `onBeforeTransformGroups`：**先处理无组条目的快路径**；**组边界（summary HUN 转移、child 继承）在 `onBeforeFinalizeFilter` 解**——此时 shade 列表接近 final，能按 group location（Summary/Child/Isolated/Detached）决策（`findHeadsUpOverride` / `findBestTransferChild` 等）
 3. 决定弹 → 等 row bind 完（02 篇的 bind 回调）→ `HeadsUpManager.showNotification`
 4. `mNotifPromoter`：HUN 中的组 child 提升为顶层（用户能直接在横幅里看到它）
 5. lifetime extender：HUN 显示期间 system server retract 该通知 → 延期删除直到横幅消失
@@ -40,9 +40,9 @@ pipeline.addNotificationLifetimeExtender(mLifetimeExtender)   // 横幅显示中
 
 `headsup/HeadsUpManagerImpl.java`（实现 `HeadsUpManager` + `HeadsUpRepository`）：
 
-- **`HeadsUpEntry`**（内部类）：每条横幅的计时状态——expiration（`mEarliestRemovalTime`）、`mWasUnpinned`、sticky/pinned 标记、`setExpiration` 重排倒计时
-- `showNotification(entry, fromUserAction)` → `addHeadsUpEntry`（按 `compare` 插入有序集合，溢出挤掉最旧的）→ 通知 `OnHeadsUpChangedListener`
-- `removeNotification(key, releaseImmediately, reason)`：立即或延迟（`canRemoveImmediately` 问 coordinator 是否还在绑定中）
+- **`HeadsUpEntry`**（内部类）：每条横幅的计时状态——`mEarliestRemovalTime`（最早移除时间）、`mWasUnpinned`、`updateEntry(updateEarliestRemovalTime=true)` 更新计时并经 `scheduleAutoRemovalCallback` 重排自动移除回调（时长还经 `AvalancheController.getDuration` 调整）、sticky/pinned 标记
+- `showNotification(entry, isFromUserAction)` → `createHeadsUpEntry` → 经 `mAvalancheController.update`（可能被雪崩窗口延迟）→ 入 `mHeadsUpEntryMap` + `onEntryAdded`（定 pin 状态、通知 `OnHeadsUpChangedListener`）
+- `removeNotification(key, releaseImmediately, reason)`：立即或延迟；`canRemoveImmediately` 由 HeadsUpManagerImpl **自查**（是否被手动划出、是否非 top entry、用户动作豁免、是否已显示够最短时长）；「还在 bind 中」是 coordinator 侧 `isEntryBinding` 的语义
 - **pin 规则**：`shouldHeadsUpBecomePinned` = 有 full-screen intent 且未被用户 unpin（来电/闹钟类横幅不自动消失）
 - **snooze**：per-package 降频（`heads_up_snooze_length_ms`，用户可对某 App「冷却横幅」）
 - 用户展开/收起 shade 时 `onExpandingFinished` 决定哪些横幅转列表、哪些直接撤
@@ -51,15 +51,16 @@ pipeline.addNotificationLifetimeExtender(mLifetimeExtender)   // 横幅显示中
 
 - `interruption/HeadsUpViewBinder.java`：把 entry 绑到横幅宿主视图（与 row 的 `headsUpChild` 内容槽配合，02 篇）
 - `NotificationTransitionAnimatorController.kt`：横幅滑入/滑出动画（与 06 篇的 launch 动画共用动画设施）
-- `HeadsUpAnimationEvent` / `HeadsUpAnimator.kt`：动画事件与执行器；`HeadsUpTouchHelper`：横幅上的滑动接听/撤下手势
+- `HeadsUpAnimationEvent` / `HeadsUpAnimator.kt`：横幅动画的**共享数值**（Y 位移，`StackScrollAlgorithm`/`StackStateAnimator` 共用保证一致）；滑入滑出的实际驱动在 `NotificationStackScrollLayout`（消费动画事件）。`HeadsUpTouchHelper`：横幅触摸手势——下滑拖出 shade、上滑 fling 收起（可触发 per-package snooze）
+- `NotificationTransitionAnimatorController.kt`：**点击通知启动 App 时的共享元素转场**（`ActivityTransitionAnimator.Controller`，通知行展开成新窗口；见 06 篇 launch 动画）——不是横幅进出动画
 
 ## 3.5 AvalancheController：通知雪崩抑制
 
-`headsup/AvalancheController.kt`（17 新增）：短时间内大量通知到达时**批量延迟 HUN 展示与移除**，避免横幅连环轰炸。受 `NotificationThrottleHun`（用户设置「通知冷却」）与 `AvalancheReplaceHunWhenCritical`（critical 通知到达时替换等待中的普通横幅）控制。Dev note 见类注释：调试时可关掉 suppression，避免每次构建后 2 分钟无横幅。
+`headsup/AvalancheController.kt`（近年新增，版权 2024）：短时间内大量通知到达时**批量延迟 HUN 展示与移除**，避免横幅连环轰炸。受 `NotificationThrottleHun`（用户设置「通知冷却」）与 `AvalancheReplaceHunWhenCritical`（critical 通知到达时替换等待中的普通横幅）控制。Dev note 见类注释：调试时可关掉 suppression，避免每次构建后 2 分钟无横幅。
 
 ## 3.6 与 AOD 脉冲的衔接
 
-息屏时 HUN 不弹屏，走 doze 脉冲链路：`NotificationAlerted` → `DozeTriggers.onNotification`（判定 `pulseOnNotificationEnabled`）→ `requestPulse` → AOD 短暂亮起（详见 [AOD 知识库](../2026-09-30-aod-knowledge-base.md) §1.5）。`NotificationWakeUpCoordinator`（`statusbar/notification/NotificationWakeUpCoordinator.kt`）是通知侧「该唤醒屏幕了吗」的决策器（与 DozeHost 对接）。
+息屏时 HUN 不弹屏，走 doze 脉冲链路：`NotificationAlerted` → `DozeTriggers.onNotification`（判定 `pulseOnNotificationEnabled`）→ `requestPulse` → AOD 短暂亮起（详见 [AOD 知识库](../2026-09-30-aod-knowledge-base.md) §1.5）。`NotificationWakeUpCoordinator`（`statusbar/notification/NotificationWakeUpCoordinator.kt`）的职责是**通知在 doze/唤醒过程中的可见性与 doze-amount 动画**、pulse expanding 状态同步（监听 `StatusBarStateController`/`HeadsUpManager`/shade 展开）；「是否脉冲唤醒」的决策在 `DozeTriggers`/`DozeHost`。
 
 ## 3.7 时序：一条高优先级通知弹横幅
 
@@ -73,7 +74,7 @@ sequenceDiagram
     participant VB as HeadsUpViewBinder
 
     COL->>HUC: onEntryAdded(entry)
-    HUC->>VID: checkDecision(entry)
+    HUC->>VID: makeAndLogHeadsUpDecision(entry)
     VID-->>HUC: Decision(shouldInterrupt, logReason)
     HUC->>HUC: 记 PostedEntry（组边界在 transform 前处理）
     HUC->>VB: bindHeadsUpView（等 row bind）
@@ -87,6 +88,6 @@ sequenceDiagram
 ## 3.8 本篇小结（本项目落点）
 
 - 全部 `:SystemUI-core`：`headsup/`（16 文件）、`interruption/`（决策层）、`collection/coordinator/HeadsUpCoordinator.kt`。
-- 关键 flags：`NotificationThrottleHun`、`AvalancheReplaceHunWhenCritical`、compact HUN style。
+- 关键 flags：`NotificationThrottleHun`、`AvalancheReplaceHunWhenCritical`、`NotificationChipFromCompactContent`（compact 横幅样式来源）。
 - 排查「不弹横幅」：`dumpsys … NotifPipeline` 看 HeadsUpCoordinator 段 + `VisualInterruptionDecisionLogger`（logReason 直接给原因）+ `settings get global heads_up_notifications_enabled`。
 - 与 [AOD 知识库](../2026-09-30-aod-knowledge-base.md) §3.6、本篇 §3.6 构成「亮屏弹横幅 / 息屏走脉冲」的完整二分。

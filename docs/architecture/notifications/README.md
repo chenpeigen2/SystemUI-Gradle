@@ -20,7 +20,7 @@ flowchart TD
         S["STAGE 6 UPDATE SHADE<br/>ShadeViewManager<br/>(NotifViewRenderer/ViewBarn/Stack)"]
     end
     subgraph STAGE 0 横切
-        CO["NotifCoordinators（33 个 Coordinator<br/>注册 filter/promoter/section/listener）"]
+        CO["NotifCoordinators（32 个 Coordinator<br/>注册 filter/promoter/section/listener）"]
     end
     CO -.->|attach 时注册 hook| B
     CO -.->|attach 时注册 hook| COL
@@ -31,7 +31,7 @@ flowchart TD
 
 1. **数据与视图彻底分离**：管道产出的始终是 `ListEntry` 树（`NotificationEntry`/`GroupEntry`/`BundleEntry`），视图层（row）只是 entry 的渲染产物，由 `NotifViewBarn` 按 entry 缓存。
 2. **一切扩展点都是「可失效的注册器」**：filter/promoter/comparator/sectioner 等 pluggable 变更时回调 invalidation → `NotifPipelineChoreographer` 合并调度 → 重跑 `buildList`（Choreographer 帧对齐 + 100ms 超时兜底）。
-3. **Coordinator 模式**：33 个 coordinator 按子系统拆分（锁屏/排名/HUN/对话/17 新增 summarization…），每个在 attach 时往管道挂自己的 hook，互不直接依赖。
+3. **Coordinator 模式**：32 个 coordinator 按子系统拆分（29 个常驻 + LockScreenMinimalism/Highlights/Hsu 3 个 flag 门控）（锁屏/排名/HUN/对话/17 新增 summarization…），每个在 attach 时往管道挂自己的 hook，互不直接依赖。
 4. **分组原子性**：`GroupCoalescer` 把同一 group 的连续 post 聚合成 batch 一次性交给 Collection（避免「summary 先到、child 后到」导致的列表跳变）。
 
 ## 术语表

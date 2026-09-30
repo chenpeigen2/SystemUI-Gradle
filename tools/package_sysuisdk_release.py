@@ -18,6 +18,7 @@ officially-based platform with a LICENSE/NOTICE provenance stack).
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import io
 import json
@@ -25,6 +26,7 @@ import os
 import platform as plat
 import stat
 import sys
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -127,10 +129,34 @@ def write_deterministic_zip(entries: dict[str, bytes]) -> bytes:
     return buf.getvalue()
 
 
+def write_deterministic_targz(entries: dict[str, bytes]) -> bytes:
+    """Deterministic tar.gz: sorted entries, mtime 0, uid/gid 0, mode 0644,
+    gzip header without filename/timestamp — byte-identical across runs."""
+    tar_buf = io.BytesIO()
+    with tarfile.open(fileobj=tar_buf, mode="w", format=tarfile.GNU_FORMAT) as tf:
+        for name in sorted(entries):
+            data = entries[name]
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.mtime = 0
+            info.uid = 0
+            info.gid = 0
+            info.uname = ""
+            info.gname = ""
+            info.mode = 0o644
+            info.type = tarfile.REGTYPE
+            tf.addfile(info, io.BytesIO(data))
+    gz_buf = io.BytesIO()
+    with gzip.GzipFile(fileobj=gz_buf, mode="wb", mtime=0, filename="") as gz:
+        gz.write(tar_buf.getvalue())
+    return gz_buf.getvalue()
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="package_sysuisdk_release.py",
-        description="Package android-SysUISdk as a deterministic release ZIP.")
+        description="Package android-SysUISdk as deterministic release "
+                    "artifacts (zip and/or tar.gz).")
     ap.add_argument("--platform",
                     help="platform directory (default "
                          "<sdk-root>/platforms/android-SysUISdk)")
@@ -143,8 +169,27 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--name", default=DEFAULT_RELEASE_NAME,
                     help=f"release base name (default {DEFAULT_RELEASE_NAME})")
     ap.add_argument("--output",
-                    help="output ZIP path (default <repo>/dist/<name>.zip)")
+                    help="output path. Endswith .zip/.tar.gz: single artifact "
+                         "of that format; extension-less: base path for both "
+                         "formats (default <repo>/dist/<name>)")
     return ap
+
+
+def _resolve_outputs(output_arg: str | None, name: str,
+                     repo_root: Path) -> list[tuple[str, Path]]:
+    """Return [(format, path)]: extension decides single format; extension-less
+    base produces both (release policy: ship zip AND tar.gz)."""
+    if output_arg:
+        p = Path(output_arg)
+        if p.name.endswith(".tar.gz"):
+            return [("tar.gz", p)]
+        if p.name.endswith(".zip"):
+            return [("zip", p)]
+        base = p
+    else:
+        base = repo_root / "dist" / name
+    return [("zip", Path(str(base) + ".zip")),
+            ("tar.gz", Path(str(base) + ".tar.gz"))]
 
 
 def run(argv: list[str] | None = None) -> int:
@@ -157,26 +202,31 @@ def run(argv: list[str] | None = None) -> int:
                         else sdk_root / "platforms" / PLATFORM_DIR_NAME)
         release_dir = (Path(args.release_dir) if args.release_dir
                        else repo_root / "release" / "sysuisdk")
-        output = (Path(args.output) if args.output
-                  else repo_root / "dist" / f"{args.name}.zip")
+        outputs = _resolve_outputs(args.output, args.name, repo_root)
 
         check_generator_owned(platform_dir)
         entries = collect_doc_entries(release_dir)
         entries.update(collect_platform_entries(platform_dir))
-        payload = write_deterministic_zip(entries)
 
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_bytes(payload)
-        digest = hashlib.sha256(payload).hexdigest()
-        output.with_suffix(output.suffix + ".sha256").write_text(
-            f"{digest}  {output.name}\n", encoding="utf-8")
+        results = []
+        for fmt, output in outputs:
+            payload = (write_deterministic_zip(entries) if fmt == "zip"
+                       else write_deterministic_targz(entries))
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(payload)
+            digest = hashlib.sha256(payload).hexdigest()
+            output.with_suffix(output.suffix + ".sha256").write_text(
+                f"{digest}  {output.name}\n", encoding="utf-8")
+            results.append((fmt, output, len(payload), digest))
     except PackageError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
-    print(f"packaged: {output}")
-    print(f"  entries : {len(entries)}")
-    print(f"  size    : {len(payload)} bytes")
-    print(f"  sha256  : {digest}")
+    for fmt, output, size, digest in results:
+        print(f"packaged: {output}")
+        print(f"  format  : {fmt}")
+        print(f"  entries : {len(entries)}")
+        print(f"  size    : {size} bytes")
+        print(f"  sha256  : {digest}")
     return 0
 
 

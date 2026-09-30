@@ -8,21 +8,25 @@ r2 supersedes r1: merged class method bodies are now standard SDK stubs,
 fixing Android Studio Gradle sync (AGP MockableJarTransform crash). See the
 Release page for the full change log.
 
-1. Download these two assets from the Release page into the same directory:
+1. Download these files from the Release page into the same directory
+   (zip for Windows, tar.gz for Unix; identical content):
 
    * SysUISdk-android-17.0.0_r1-r2.zip
    * SysUISdk-android-17.0.0_r1-r2.zip.sha256
+   * SysUISdk-android-17.0.0_r1-r2.tar.gz
+   * SysUISdk-android-17.0.0_r1-r2.tar.gz.sha256
 
 2. Verify before extracting. From the download directory, run:
 
-       sha256sum --check SysUISdk-android-17.0.0_r1-r2.zip.sha256
+       sha256sum --check SysUISdk-android-17.0.0_r1-r2.zip.sha256 SysUISdk-android-17.0.0_r1-r2.tar.gz.sha256
 
    The result must be:
 
        SysUISdk-android-17.0.0_r1-r2.zip: OK
+       SysUISdk-android-17.0.0_r1-r2.tar.gz: OK
 
-   The authoritative SHA-256 is shown on the Release page and in the
-   .zip.sha256 sidecar.
+   The authoritative SHA-256 values are shown on the Release page and in the
+   .sha256 sidecars.
 
 3. Install only the platform directory. Set ANDROID_SDK_ROOT to the SDK used
    by Gradle, and remove or rename any existing android-SysUISdk first.
@@ -36,6 +40,7 @@ Release page for the full change log.
          }
          mkdir -p "$ANDROID_SDK_ROOT/platforms"
          unzip -q SysUISdk-android-17.0.0_r1-r2.zip 'android-SysUISdk/*' -d "$ANDROID_SDK_ROOT/platforms"
+         # tar.gz 用户改用：tar -xzf SysUISdk-android-17.0.0_r1-r2.tar.gz -C "$ANDROID_SDK_ROOT/platforms"
          test -f "$target/android.jar"
        )
 

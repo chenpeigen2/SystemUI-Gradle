@@ -20,26 +20,32 @@ Prebuilt `android-SysUISdk` compile platform for SystemUI-Gradle. This r2 asset 
 
 ## Assets
 
-Download both files into the same directory:
+Download these files into the same directory (zip for Windows-friendliness,
+tar.gz for Unix; identical content):
 
 - `SysUISdk-android-17.0.0_r1-r2.zip`
 - `SysUISdk-android-17.0.0_r1-r2.zip.sha256`
+- `SysUISdk-android-17.0.0_r1-r2.tar.gz`
+- `SysUISdk-android-17.0.0_r1-r2.tar.gz.sha256`
 
 Verify the archive before extracting it:
 
 ```bash
-sha256sum --check SysUISdk-android-17.0.0_r1-r2.zip.sha256
+sha256sum --check SysUISdk-android-17.0.0_r1-r2.zip.sha256 SysUISdk-android-17.0.0_r1-r2.tar.gz.sha256
 ```
 
 Expected result:
 
 ```text
 SysUISdk-android-17.0.0_r1-r2.zip: OK
+SysUISdk-android-17.0.0_r1-r2.tar.gz: OK
 ```
 
-SHA-256: `6afc52cc461ea820c99172002ab4e185225e418ccc0a7223f079ce441681d766`
+SHA-256 (zip): `165cc0e0c10ae8b1bfd4dadb78197888191bb19641e562135fa54102732fa75c`
 
-（此 release 故意不在 zip 内嵌自身摘要以避免自指；以本页与 `.zip.sha256` sidecar 为准。）
+SHA-256 (tar.gz): `a3feac32e4309af6c4d07d0b928193261938adbc52044b082d16c845228f444e`
+
+（此 release 故意不在包内嵌自身摘要以避免自指；以本页与 `.sha256` sidecar 为准。两种格式内容一致，均确定性打包。）
 
 ## Install
 
@@ -56,7 +62,7 @@ Set `ANDROID_SDK_ROOT` to the SDK used by Gradle. Remove or rename an existing
   }
   mkdir -p "$ANDROID_SDK_ROOT/platforms"
   unzip -q SysUISdk-android-17.0.0_r1-r2.zip 'android-SysUISdk/*' \
-    -d "$ANDROID_SDK_ROOT/platforms"
+    -d "$ANDROID_SDK_ROOT/platforms"   # tar.gz 用户：tar -xzf SysUISdk-android-17.0.0_r1-r2.tar.gz -C "$ANDROID_SDK_ROOT/platforms"
   test -f "$target/android.jar"
 )
 ```

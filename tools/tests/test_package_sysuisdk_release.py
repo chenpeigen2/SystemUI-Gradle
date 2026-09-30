@@ -100,6 +100,68 @@ class DeterminismTest(unittest.TestCase):
                 self.assertEqual(rc, 0)
             self.assertEqual(out1.read_bytes(), out2.read_bytes())
 
+    def test_targz_two_runs_produce_identical_bytes(self):
+        with tempfile.TemporaryDirectory() as td:
+            platform = _make_platform(Path(td))
+            release = _make_release_dir(Path(td))
+            out1 = Path(td) / "a.tar.gz"
+            out2 = Path(td) / "b.tar.gz"
+            for out in (out1, out2):
+                rc = pkg.run(["--platform", str(platform),
+                              "--release-dir", str(release),
+                              "--output", str(out)])
+                self.assertEqual(rc, 0)
+            self.assertEqual(out1.read_bytes(), out2.read_bytes())
+
+    def test_targz_layout_and_metadata(self):
+        import gzip
+        import hashlib
+        import tarfile
+        with tempfile.TemporaryDirectory() as td:
+            platform = _make_platform(Path(td))
+            release = _make_release_dir(Path(td))
+            out = Path(td) / "o.tar.gz"
+            self.assertEqual(
+                pkg.run(["--platform", str(platform),
+                         "--release-dir", str(release),
+                         "--output", str(out)]), 0)
+            with tarfile.open(fileobj=gzip.open(out, "rb"), mode="r|") as tf:
+                members = [m for m in tf]
+            names = [m.name for m in members]
+            self.assertEqual(names, sorted(names))
+            self.assertEqual(names[:3], ["LICENSE", "NOTICE", "README.txt"])
+            self.assertIn(f"{pkg.PLATFORM_DIR_NAME}/android.jar", names)
+            for m in members:
+                self.assertTrue(m.isfile(), m.name)
+                self.assertEqual(m.mtime, 0, m.name)
+                self.assertEqual((m.uid, m.gid), (0, 0), m.name)
+                self.assertEqual(m.mode, 0o644, m.name)
+            sidecar = Path(str(out) + ".sha256")
+            self.assertTrue(sidecar.is_file())
+            digest, _, fname = sidecar.read_text().strip().partition("  ")
+            self.assertEqual(
+                digest, hashlib.sha256(out.read_bytes()).hexdigest())
+            self.assertEqual(fname, out.name)
+
+    def test_default_output_writes_both_formats(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as td:
+            platform = _make_platform(Path(td))
+            release = _make_release_dir(Path(td))
+            base = Path(td) / "dist" / "rel"
+            self.assertEqual(
+                pkg.run(["--platform", str(platform),
+                         "--release-dir", str(release),
+                         "--output", str(base)]), 0)
+            for suffix in (".zip", ".tar.gz"):
+                art = Path(str(base) + suffix)
+                self.assertTrue(art.is_file(), art)
+                sidecar = Path(str(art) + ".sha256")
+                digest, _, fname = sidecar.read_text().strip().partition("  ")
+                self.assertEqual(
+                    digest, hashlib.sha256(art.read_bytes()).hexdigest())
+                self.assertEqual(fname, art.name)
+
     def test_zip_layout_and_metadata(self):
         with tempfile.TemporaryDirectory() as td:
             platform = _make_platform(Path(td))

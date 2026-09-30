@@ -452,8 +452,7 @@ uv run python tools/check_aconfig_jarjar_references.py --apk app/build/outputs/a
 - **commit message 用英文**，及时 commit 并 push (用户 2026-08-12 明确)
 - **不用 `@Suppress("DEPRECATION")` 等绕过语法** (用户 2026-08-12 明确)
 - **遇到不会的内容去查官方文档** (用户 2026-08-12 明确)
-- **派发 herdr worker 时一个 worker 一个独立 tab**，不做同 tab split (用户 2026-08-19 明确)
-- **后续 herdr worker/reviewer 统一显式使用 `joycode/GLM-5.3`、`thinking=high`**；已在运行的 worker 无需为此重启，并须在接受 `CONTRACT:` 前独立核实 session `provider/modelId` (用户 2026-09-02 明确)
+- **herdr worker/reviewer 派发**：一个 worker 一个独立 tab，不做同 tab split (用户 2026-08-19 明确)；模型在派发时由用户指定，worker 接受 `CONTRACT:` 前须独立核实 session `provider/modelId`
 - **skill 内不提及已删除的 skill** (用户 2026-08-25 明确)：不要求专门说明某 skill 被删除，只保留当前有效内容
 
 ---
@@ -472,6 +471,7 @@ uv run python tools/check_aconfig_jarjar_references.py --apk app/build/outputs/a
 | 2026-08-20 增订 | Task 039 文档治理：§四 由动态进度快照改为实时状态归属（指向 CURRENT_STATE）；规则 P/S/C/F/R/B/H/D/I、依赖策略、SysUISdk 规则、诊断流程与用户偏好全部保留不变 |
 | 2026-08-21 增订 | SysUISdk 工作流事实同步：旧 SDK 补丁脚本已退役，ADR 索引、§1.7、§2.4、§7 工具表统一为单入口 `python3 tools/build_sysuisdk.py --aosp-root`（ADR 0006 机制已修订） |
 | 2026-09-03 增订 | C5 闭环事实同步：ADR 索引补 0005/0007/0008；§7 工具表新增 `check_aconfig_jarjar_references.py`；§6 速查新增 APK 引用完整性门禁。README 双语重写为对外文档（不再承载内部进度快照） |
+| 2026-09-30 增订 | §八 herdr 偏好精简：移除具体模型指定（本地代理已下线），模型改为派发时指定 |
 
 ---
 

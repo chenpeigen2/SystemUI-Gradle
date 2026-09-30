@@ -17,7 +17,7 @@
 2. **若参与编排**（herdr worker/architect）再读 [`docs/orchestration/CHARTER.md`](./orchestration/CHARTER.md)、[`docs/orchestration/STATE.md`](./orchestration/STATE.md) 和 [`docs/orchestration/log.md`](./orchestration/log.md) 尾部。
 3. **读 [`docs/CURRENT_STATE.md`](./CURRENT_STATE.md)** — 获取全部实时状态：构建矩阵、版本、依赖产物、blocker、下一步。
 4. **读 [`docs/PLAN.md`](./PLAN.md)** — 未完成路线与完成条件。
-   - 专题知识库（按需）：[AOD 知识库](./architecture/2026-09-30-aod-knowledge-base.md)——doze 状态机 / 触发器与脉冲 / keyguard Compose 表现层 / BurnIn / framework 契约 / Gradle 落点 / 调试速查；[插件化知识库](./architecture/2026-09-30-systemui-plugin-knowledge-base.md)——加载引擎 / 版本协议 / ProtectedInterface 代理 / 插件定义方案 / Gradle 落点。
+   - 专题知识库（按需）：[AOD 知识库](./architecture/2026-09-30-aod-knowledge-base.md)——doze 状态机 / 触发器与脉冲 / keyguard Compose 表现层 / BurnIn / framework 契约 / Gradle 落点 / 调试速查；[插件化知识库](./architecture/2026-09-30-systemui-plugin-knowledge-base.md)——加载引擎 / 版本协议 / ProtectedInterface 代理 / 插件定义方案 / Gradle 落点；[通知知识库](./architecture/notifications/)（目录 8 篇）——7 Stage 管道 / 卡片与 inflate / 横幅 HUN / 通知栏列表 / 展示面 / 交互动画 / Gradle 落点与 dumpsys 速查。
 5. **项目状态：完成（2026-09-09）**。tag `v1.0.0-android-17.0.0_r1` 已 push，GitHub Release 已发布。C6 已于 2026-09-08（Task 108）闭合：版本元数据 37/"17" + 双变体重建 + 静态门 PASS + 发布清单快照（`docs/release-manifest/`）+ ADR 0007 闭环。C5 已由 Task 099 闭合；替换后权限崩溃回归已由 Tasks 100–104 闭环（sharedUserId 修复 + 双 variant 全新实例终验 PASS，见 `docs/architecture/2026-09-06-fresh-instance-dual-variant-validation.md`）。Task 079 broad replay 经用户裁定关闭（won't-do，2026-09-09）；方案 B 保留为可选未来方向，非待办。项目进入按需维护状态（上游基线升级按 README rebalance 流程）。
 
 ## 1.0 Phase C 主线（2026-08-27 起）

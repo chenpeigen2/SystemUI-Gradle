@@ -221,7 +221,7 @@ Release 新基线）。详细报告见 `docs/issues/` 对应日期文件。
   （C4a）、`docs/adr/0007-phase-c-clean-regen-release-tag.md`（Phase C 决策）
 - 错误数/迁移历史：`docs/GRADLE_MIGRATION_LOG.md`（append-only）
 - 深度调研与 audit：`docs/architecture/`
-- 专题知识库（2026-09-30）：AOD 见 `docs/architecture/2026-09-30-aod-knowledge-base.md`（doze 状态机 / 触发器与脉冲 / keyguard Compose 表现层 / BurnIn / framework 契约 / Gradle 落点 / 调试速查）；插件化见 `docs/architecture/2026-09-30-systemui-plugin-knowledge-base.md`（加载引擎 / 版本协议 / ProtectedInterface 代理 / 插件定义方案 / 本项目 processor 未接线差异）
+- 专题知识库（2026-09-30）：AOD 见 `docs/architecture/2026-09-30-aod-knowledge-base.md`（doze 状态机 / 触发器与脉冲 / keyguard Compose 表现层 / BurnIn / framework 契约 / Gradle 落点 / 调试速查）；插件化见 `docs/architecture/2026-09-30-systemui-plugin-knowledge-base.md`（加载引擎 / 版本协议 / ProtectedInterface 代理 / 插件定义方案 / 本项目 processor 未接线差异）；通知见 `docs/architecture/notifications/`（README 总览 + 7 篇：管道 / 卡片与 inflate / 横幅 HUN / 通知栏列表 / 展示面 / 交互动画 / Gradle 落点与调试速查）
 - 每日问题记录：`docs/issues/`
 - 踩坑经验：`docs/PITFALLS.md`
 - 未完成路线：`docs/PLAN.md`

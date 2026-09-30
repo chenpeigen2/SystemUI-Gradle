@@ -102,36 +102,115 @@ private fun supportsBlursOnWindowsBase(): Boolean =
 
 四层降级：**framework 能力 → 高端 GPU → 系统属性总开关 → 运行时设置/省电**（`CrossWindowBlurListeners.isCrossWindowBlurEnabled` 会随「窗口模糊」设置与省电模式动态关闭）。
 
-## 4. BlurChoreographer：每帧一次的节拍器
+## 4. BlurChoreographer：每帧一次的节拍器（实现全貌）
 
-`window/ui/BlurChoreographer.kt`——接口 + 两个实现：
+`window/ui/BlurChoreographer.kt`——接口 + 两个实现 + Dagger 提供者。核心职责：**把任意时刻到达的模糊请求合并成「每帧最多一次」的 SurfaceControl 事务**，并配合 `BlurUtils` 管理 early-wakeup 生命周期。
 
-### 4.1 DefaultBlurChoreographer
+### 4.1 接口契约（4 个方法）
 
 ```kotlin
-// DefaultBlurChoreographer（核心摘录）
-private val newFrameCallback = Choreographer.FrameCallback {
-    wasUpdateScheduledForThisFrame = false
-    blurUtils.applyBlur(rootView.viewRootImpl, lastScheduledBlurEffect.radius.toInt(),
-                        false, lastScheduledBlurEffect.scale)
-    blurAppliedListener?.invoke(lastScheduledBlurEffect)   // 应用后回调（view 层确认）
-}
-override fun applyBlur(blurEffect: BlurEffect) {
-    // 同帧多次请求只保留最后一次（wasUpdateScheduledForThisFrame 合并）
-    if (wasUpdateScheduledForThisFrame) {
-        if (lastScheduledBlurEffect != blurEffect) lastScheduledBlurEffect = blurEffect
-    } else { ... postFrameCallback ... }
+interface BlurChoreographer {
+    fun applyBlur(blurEffect: BlurEffect)               // 应用模糊（内部合并）
+    fun setPersistentEarlyWakeup(persistent: Boolean)   // CUJ 期间保持 SF 长工作时长
+    fun registerOnBlurAppliedListener(listener: BlurAppliedListener)  // 落帧后回调
+    fun clearOnBlurAppliedListener()
 }
 ```
 
-- **合并语义**：一帧内 N 次模糊请求只落最后一次（防抖）
-- `setPersistentEarlyWakeup(persistent)`：CUJ 开始/结束时开关 SurfaceFlinger 长工作时长
-- `registerOnBlurAppliedListener`：模糊实际落帧后回调（view 层用它同步 UI 状态）
-- `NoopBlurChoreographer`：空实现（不支持模糊的 SysUI 变体）
+### 4.2 DefaultBlurChoreographer 全走查
 
-### 4.2 Dagger 装配
+**两阶段：prepare（帧前）→ apply（帧内）**。`applyBlur` 的完整决策逻辑（源码摘录）：
 
-`window/dagger/WindowRootViewBlurModule.kt`（支持模糊的变体装这个，绑定 `WindowRootViewBlurRepositoryImpl`）与 `WindowRootViewBlurNotSupportedModule.kt`（不支持的变体装 Noop）——**同一套代码两个 Dagger 模块切变体**。`SceneTransitionBlurViewModel` 注入 `@Named("ShadeWindowBlurChoreographer")` 的 choreographer（shade 窗口专属实例）。
+```kotlin
+// DefaultBlurChoreographer#applyBlur（完整决策段）
+override fun applyBlur(blurEffect: BlurEffect) {
+    Assert.isMainThread()
+    val newBlurRadius = blurEffect.radius.toInt()
+    if (wasUpdateScheduledForThisFrame) {
+        // 本帧已排帧回调：只换目标值，不再排第二次
+        if (lastScheduledBlurEffect != blurEffect) {
+            Log.w(TAG, "Multiple blur values emitted in the same frame")   // 诊断告警
+        }
+        lastScheduledBlurEffect = blurEffect
+        return
+    } else if (lastScheduledBlurEffect == blurEffect) {
+        logger.logSkipApplyBlur(...)   // 与上次相同：直接跳过（去重）
+        return
+    }
+    TrackTracer.instantForGroup(traceTag, "preparedBlurRadius", newBlurRadius)
+    lastScheduledBlurEffect = blurEffect
+    wasUpdateScheduledForThisFrame = true
+    blurUtils.prepareBlur(newBlurRadius)          // ← 帧前：0→非 0 时提前开 early wakeup
+    choreographer.postFrameCallback(newFrameCallback)
+}
+```
+
+**帧回调（事务真正落地的时刻）**：
+
+```kotlin
+private val newFrameCallback = Choreographer.FrameCallback {
+    wasUpdateScheduledForThisFrame = false
+    blurUtils.applyBlur(
+        rootView.viewRootImpl,
+        lastScheduledBlurEffect.radius.toInt(),
+        false,
+        lastScheduledBlurEffect.scale,
+    )
+    TrackTracer.instantForGroup(traceTag, "appliedBlurRadius", lastScheduledBlurEffect.radius.toInt())
+    blurAppliedListener?.invoke(lastScheduledBlurEffect)   // 落帧确认（view 层同步 UI 状态）
+}
+```
+
+完整时序：
+
+```mermaid
+sequenceDiagram
+    participant VM as SceneTransitionBlurViewModel<br/>/Keyguard 过渡
+    participant BC as DefaultBlurChoreographer
+    participant BU as BlurUtils
+    participant CH as Choreographer
+    participant SF as SurfaceFlinger
+
+    VM->>BC: applyBlur(BlurEffect(r, s))  ×N 次/帧
+    BC->>BC: 同帧合并（只留最后一次，多值告警）
+    BC->>BC: 与 last 相同则跳过（去重）
+    BC->>BU: prepareBlur(r)（0→非 0 时提前开 early wakeup）
+    BC->>CH: postFrameCallback
+    CH->>BU: applyBlur(viewRootImpl, r, opaque, s)
+    BU->>SF: SurfaceControl 事务（blurRadius + scale + earlyWakeup 开关）
+    BU-->>BC: 落帧
+    BC-->>VM: blurAppliedListener(BlurEffect)
+```
+
+**其他两个入口**：
+
+- `setPersistentEarlyWakeup(persistent)` → 直通 `blurUtils.setPersistentEarlyWakeup(persistent, rootView.viewRootImpl)`——CUJ 开始置 true（预热）、结束置 false（收回）；与 §3.3 的 `persistentEarlyWakeupRequired` 配合，模糊归零时不会误收 early wakeup
+- `registerOnBlurAppliedListener`：**单槽** listener（后注册覆盖前注册）；view 层用它确认「这一帧模糊真的生效了」再更新自身状态
+
+### 4.3 NoopBlurChoreographer
+
+全部空实现——不支持模糊的 SysUI 变体、或 `Choreographer` 不可得时的退化路径（`getSystemService(Choreographer)` 返回 null 的环境，如部分测试场景）。
+
+### 4.4 Dagger 装配（每窗口一个实例）
+
+```kotlin
+// BlurChoreographerModule（BlurChoreographer.kt 尾部，源码摘录）
+@Module
+object BlurChoreographerModule {
+    @Provides @Named("ShadeWindowBlurChoreographer") @SysUISingleton
+    fun providesBlurChoreographer(
+        rootView: WindowRootView, blurUtils: BlurUtils,
+        choreographer: Choreographer?, logger: BlurLogger,
+    ): BlurChoreographer =
+        if (choreographer != null)
+            DefaultBlurChoreographer(rootView, "windowBlur", blurUtils, choreographer, logger)
+        else NoopBlurChoreographer()
+}
+```
+
+- 当前仅一个命名实例 `"ShadeWindowBlurChoreographer"`（绑到 `WindowRootView`，scene/shade 窗口），消费者是 `SceneTransitionBlurViewModel`（§6）
+- traceTag `"windowBlur"`：Perfetto 里 `preparedBlurRadius`/`appliedBlurRadius` 两个 counter 事件（TrackTracer），排查掉帧直接看这两个 trace
+- 变体开关在 repository 层（`WindowRootViewBlurModule` vs `WindowRootViewBlurNotSupportedModule`）与本层（`choreographer == null`）双保险
 
 ## 5. 状态层
 

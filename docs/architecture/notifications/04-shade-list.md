@@ -38,9 +38,55 @@ public class ExpandableViewState extends ViewState {
 
 布局引擎产出各 child 的 `ExpandableViewState`，`StackStateAnimator` 据此做 spring/插值动画——**「通知条目平滑滑动到新位置」全部由这套目标状态 + 动画器完成**。
 
-### 4.1.4 滚动
+### 4.1.4 布局管线全走查（updateChildren → 算法 → 动画）
 
-`stack/OverScrollerWrapper.kt` 包装系统 `android.widget.OverScroller`（同包 `NoOpOverScroller.kt` 是 `OverScrollerInterface` 的空实现，用于无滚动场景）；顶部/底部 over-scroll 物理效果在 NSSL 内实现。
+`NSSL#updateChildren`（`:1457`）是每次结构/状态变化后的总入口：
+
+```java
+// NotificationStackScrollLayout#updateChildren（源码摘录）
+private void updateChildren() {
+    updateScrollStateForAddedChildren();
+    mAmbientState.setCurrentScrollVelocity(mScroller.isFinished() ? 0 : mScroller.getCurrVelocity());
+    mStackScrollAlgorithm.resetViewStates(mAmbientState, getSpeedBumpIndex());  // 算目标状态
+    if (!isCurrentlyAnimating() && !mNeedsAnimation) {
+        applyCurrentState();       // 无动画：直接落
+    } else {
+        startAnimationToState();   // 有动画：交给 StackStateAnimator
+    }
+    avoidNotificationOverlaps();   // 后处理：隦面裁剪防重叠
+}
+```
+
+**布局算法** `StackScrollAlgorithm.java`（`:54`）：
+
+1. `resetViewStates(ambientState, speedBumpIndex)`（`:140`）→ `initAlgorithmState`（可见 child 列表、当前 y 游标）→ `updatePositionsForState` → `updateZValuesForState`（z 层级，`:1260`）
+2. 逐 child `updateChild(i, algorithmState, ambientState)`（`:670`）：**y 游标累加式布局**——
+
+```java
+// StackScrollAlgorithm#updateChild（核心摘录）
+ExpandableViewState viewState = view.getViewState();
+// 段间间距：按 section provider + 当前展开分数 + 锁屏态算 gap
+final float gap = getGapHeightForChild(ambientState.getSectionProvider(), i, view,
+        getPreviousView(i, algorithmState), ambientState.getFractionToShade(),
+        ambientState.isOnKeyguard());
+algorithmState.mCurrentYPosition += expansionFraction * gap;
+algorithmState.mCurrentExpandedYPosition += gap;
+viewState.setYTranslation(algorithmState.mCurrentYPosition, "...updateChild.init");
+```
+
+输出是每个 child 的 `ExpandableViewState`（yTranslation/height/z/alpha/圆角/`location` 字段）。
+
+**动画** `StackStateAnimator.java`（`:52`）：
+
+- `mNewEvents: ArrayList<AnimationEvent>`（`:85`）收集本轮动画事件（ADD/REMOVE/HEADSUP 等，[03 篇](./03-heads-up.md) §3.4 的 `generateHeadsUpAnimationEvents` 也注入这里）
+- `mAnimationFilter.applyCombination(mNewEvents)`（`:176`）把多个事件合成为一组统一的动画参数（`AnimationFilter`，含 `hasGoToFullShadeEvent`/`customDelay` 等特殊路径）
+- 目标位置/高度以 `ExpandableViewState` 为准做 spring/插值
+
+**重叠防护** `avoidNotificationOverlaps()`：后处理遍历按 `notGoneIndex` 排序的 child，设 `topOverlap/bottomOverlap` 做裁剪——通常后来的视图顶部裁剪防重叠，正在消失（dismiss/移除）的视图则裁底部。
+
+### 4.1.5 滚动
+
+`stack/OverScrollerWrapper.kt` 包装系统 `android.widget.OverScroller`（同包 `NoOpOverScroller.kt` 是 `OverScrollerInterface` 的空实现，用于无滚动场景）；顶部/底部 over-scroll 物理效果在 NSSL 内实现。滚动速度经 `mScroller.getCurrVelocity()` 回写 `AmbientState.setCurrentScrollVelocity`（§4.1.4），参与动画插值。
 
 ## 4.2 从管道到 NSSL：渲染绑定全链
 
@@ -74,10 +120,25 @@ val highlightsHeaderView: SectionHeaderView? // :101
 
 `collection/render/SectionHeaderController.kt`（`SectionHeaderNodeControllerImpl`）把段头作为节点插进 `NodeSpec` 树——**段头是渲染树的一等公民**，与 row 同一套 diff 机制管理。`collection/provider/SectionHeaderVisibilityProvider.kt` 控制「静默通知」段头是否显示（`SectionStyleProvider` 的样式接口）。
 
-### 4.3.3 相关开关
+### 4.3.3 NotificationSection：段的边界模型
+
+`stack/NotificationSection.java`——每段是「bucket + 首尾可见 child」的边界对（源码摘录）：
+
+```java
+/** Represents the bounds of a section of the notification shade and handles animation when the bounds change. */
+public class NotificationSection {
+    private final int mBucket;                       // PriorityBucket
+    private ExpandableView mFirstVisibleChild;
+    private ExpandableView mLastVisibleChild;
+    // setFirstVisibleChild/setLastVisibleChild 返回 changed 布尔→触发段头动画
+}
+```
+
+`NotificationSectionsManager.kt:117`：`sections = PriorityBucket.getAllInOrder().map { NotificationSection(it) }`——**段与 PriorityBucket 一一对应**（§4.6 的 `NotificationPriorityBucket`）；`updateSection(section)`（`:178`）在每次渲染后更新边界并决定段头显隐动画。
+
+### 4.3.4 相关开关
 
 - `NotificationSectionsFeatureManager.kt`（`notification/` 根包）：段功能开关（如 conversation section 可用性）
-- `stack/NotificationSection.java`：旧 section 模型（与 sectioner 对齐使用）
 
 ## 4.4 分组呈现
 

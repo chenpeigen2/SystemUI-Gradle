@@ -24,8 +24,20 @@ sourceSets {
 
 // JVM 模块不自动获得 AGP 的 compileSdkPreview SysUISdk android.jar，
 // 需手动以 compileOnly 暴露 android.* 隐藏 API（如 android.icu.text.SimpleDateFormat）。
-val sysUiSdkDir = providers.environmentVariable("ANDROID_HOME")
-    .orElse("/home/conv/Android/Sdk")
+// SDK 路径解析顺序与 AGP 同源：ANDROID_SDK_ROOT → ANDROID_HOME → local.properties 的 sdk.dir
+// （禁止硬编码机器相关绝对路径，见 docs/issues/2026-09-30-sysui-common-sdk-path-fallback.md）
+val sysUiSdkDir = providers.environmentVariable("ANDROID_SDK_ROOT")
+    .orElse(providers.environmentVariable("ANDROID_HOME"))
+    .orElse(
+        providers.fileContents(rootProject.layout.projectDirectory.file("local.properties"))
+            .asText.map { text ->
+                text.lineSequence()
+                    .map { it.trim() }
+                    .firstOrNull { it.startsWith("sdk.dir=") }
+                    ?.removePrefix("sdk.dir=")
+                    ?: throw GradleException("sdk.dir not found in local.properties")
+            }
+    )
 val sysUiAndroidJar = sysUiSdkDir.map {
     "$it/platforms/android-SysUISdk/android.jar"
 }

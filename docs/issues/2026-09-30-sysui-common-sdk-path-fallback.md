@@ -37,6 +37,43 @@ SDK 路径解析顺序改为：`ANDROID_SDK_ROOT` → `ANDROID_HOME` → `local.
 - **Red（修复前）**：`env -u ANDROID_HOME ./gradlew :SystemUI-common:compileKotlin` → `Unresolved reference 'icu'`（本日实录）
 - **Green（修复后）**：同命令编译通过（见下方提交记录）
 
-## MockableJarTransform 遗留
+## MockableJarTransform 根因与修复（同日闭环）
 
-用户报错在修复时点不可复现（`./gradlew test` 全绿）。若复现：需完整堆栈（`--stacktrace`），重点怀疑 daemon 内存瞬态（44MB jar → mockable 生成）。此条不阻塞本次修复。
+**现象**：Android Studio Gradle 同步失败——13 个模块 `androidApis` 解析失败，
+`MockableJarTransform: .../android-SysUISdk/android.jar` 报
+`Cannot read field "outgoingEdges" because "handlerRangeBlock" is null`。
+
+**根因**（daemon 日志 + 直接调用真 generator 复现 + javap 解剖 AGP 确认）：
+
+1. AGP 的 `MockableJarGenerator`（builder 9.4.1）用 tree API 把方法体替换成 stub 时
+   **不清理 `tryCatchBlocks`**；ClassWriter `COMPUTE_FRAMES` 在悬空 handler label 上 NPE
+   （`MethodWriter.computeAllFrames`）。
+2. Google 标准 android.jar 方法体是空 stub（无 try-catch），从不触发；
+   **SysUISdk 按 ADR 0006 合并的 AOSP 真实字节码（带 try-catch）触发该 AGP 潜伏 bug**。
+3. 升级 AGP 非 targeted fix（bug 在最新 builder 9.4.1 中存在，已解剖验证）。
+
+**修复**（方案 C）：`tools/build_sysuisdk.py` 新增 `stub_class_method_bodies()`——把
+合并进 android.jar 的方法体打成标准 SDK stub 形态（android-35 形态：`<init>` 保留
+super() 前缀 + `throw new RuntimeException("Stub!")`；清空 exception table 与 Code
+子属性），`compose_android_jar` 接入；`stub_jar_method_bodies()` 可离线修复现有 jar。
+实测：javac/kotlinc 只用签名+常量，零编译信息损失（`framework.jar` 另行注入
+JavaCompile 保留真实字节码）。
+
+**TDD 证据**（红→绿）：
+
+- Red：`tools/tests/test_stub_class_method_bodies.py` 10 用例（独立 class 解析器，
+  期望值来自 android-35 标准 stub 形态）先失败（函数不存在）
+- Green：10/10 通过；`tools/tests/` 全量回到基线（仅 3 个本机环境性既有失败）
+- 集成验证：直接调用 AGP 真 `MockableJarGenerator.createMockableJar` 修复前 NPE、
+  修复后 SUCCESS（输出 26MB mockable jar）
+- 幂等：`stub_jar_method_bodies(stub_jar_method_bodies(x)) == stub_jar_method_bodies(x)`
+
+**修复过程中的实现教训**（都由测试/验证逮住）：
+
+- JVM 常量池 `cp_count` 含 0 号无效槽（夹具一度差 1）
+- `invokevirtual/special/static` 总长 3 字节（opcode+u2），曾误改为 4 导致指令游走错位
+- `MethodHandle`(tag 15) 非 wide 条目；class Utf8 为 modified UTF-8（0xC0 NUL 编码）需容错解码
+- tail 拼接一度把字段区写成方法区（由 ASM 实测 AIOOBE 逮住）
+
+**状态**：本机 `android-SysUISdk/android.jar` 已修复（备份 `android.jar.pre-stub-bak`）；
+`build_sysuisdk.py` 后续生成均自带打桩，AS 同步已可解析。

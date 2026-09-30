@@ -39,6 +39,7 @@ import os
 import platform
 import re
 import shutil
+import struct
 import sys
 import tempfile
 import zipfile
@@ -375,6 +376,321 @@ def _write_deterministic_zip(entries: dict[str, bytes]) -> bytes:
     return buf.getvalue()
 
 
+# --- Method body stubbing (MockableJarTransform 兼容性) ----------------------
+#
+# AGP 的 MockableJarGenerator（builder）把方法体替换成 stub 时不清 tryCatchBlocks，
+# ClassWriter COMPUTE_FRAMES 在悬空 handler label 上 NPE（Cannot read field
+# "outgoingEdges" because "handlerRangeBlock" is null）→ androidApis 解析失败、
+# Android Studio 同步中断。Google 标准 android.jar 不含真实方法体故从不触发；
+# SysUISdk 合并的 AOSP 真实字节码（带 try-catch）触发。本节把方法体打成标准 SDK
+# stub 形态（android-35 android.jar 形态：<init> 保留 super() 前缀后 throw "Stub!"，
+# 其余方法 throw "Stub!"，exception table 与 Code 子属性清空）。幂等。
+
+_STUB_MARKER = "Stub!"
+
+
+def _init_opcode_len() -> list[int]:
+    t = [1] * 256
+    for op in (0x10, 0x12, 0x15, 0x16, 0x17, 0x18, 0x19,
+               0x36, 0x37, 0x38, 0x39, 0x3a, 0xa9, 0xbc):
+        t[op] = 2
+    for op in (0x11, 0x13, 0x14, 0x84, *range(0x99, 0xa9),
+               0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8,
+               0xbb, 0xbd, 0xc0, 0xc1, 0xc6, 0xc7):
+        t[op] = 3
+    t[0xc5] = 4
+    t[0xb9] = 5
+    t[0xba] = 5
+    t[0xc8] = 5
+    t[0xc9] = 5
+    t[0xaa] = 0   # tableswitch（变长）
+    t[0xab] = 0   # lookupswitch（变长）
+    t[0xc4] = 0   # wide（变长）
+    return t
+
+
+_OPCODE_LEN = _init_opcode_len()
+
+
+def _insn_length(code: bytes, i: int) -> int:
+    op = code[i]
+    if op == 0xc4:  # wide：0xc4 + u1 op + u2 index [+ s2]（iinc）
+        return 6 if code[i + 1] == 0x84 else 4
+    if op == 0xaa:  # tableswitch：pad 到 4 字节对齐 + default/low/high + offsets
+        base = i + 1 + (-(i + 1)) % 4
+        low, high = struct.unpack_from(">ii", code, base + 4)
+        return base - i + 12 + (high - low + 1) * 4
+    if op == 0xab:  # lookupswitch：pad + default/npairs + pairs
+        base = i + 1 + (-(i + 1)) % 4
+        (npairs,) = struct.unpack_from(">i", code, base + 4)
+        return base - i + 8 + npairs * 8
+    return _OPCODE_LEN[op]
+
+
+def _first_invokespecial_end(code: bytes) -> int | None:
+    """返回首条 INVOKESPECIAL 的结束位置（<init> 的 super() 调用），无则 None。"""
+    i = 0
+    while i < len(code):
+        if code[i] == 0xb7:
+            return i + _insn_length(code, i)
+        i += _insn_length(code, i)
+    return None
+
+
+class _ClassCp:
+    """class 常量池：保留原始条目 + find-or-add 追加（索引稳定→幂等）。"""
+
+    def __init__(self, raw: bytes, count: int, utf8s: dict[int, str]):
+        self.raw_entries: list[bytes] = []   # 下标 = 索引-1（长型占位 None）
+        self.utf8s = utf8s
+        self._by_utf8: dict[str, int] = {v: k for k, v in utf8s.items()}
+        self._class: dict[int, int] = {}
+        self._string: dict[int, int] = {}
+        self._nat: dict[tuple[int, int], int] = {}
+        self._methodref: dict[tuple[int, int], int] = {}
+        self._next = count
+
+    def seed(self, raw_entries: list[bytes]) -> None:
+        """用已有条目播种 find-or-add 映射（追加前先复用，保证幂等）。"""
+        self.raw_entries = raw_entries
+        for idx0, raw in enumerate(raw_entries):
+            if raw is None:
+                continue
+            idx = idx0 + 1
+            tag = raw[0]
+            if tag == 7:
+                (u,) = struct.unpack_from(">H", raw, 1)
+                self._class.setdefault(u, idx)
+            elif tag == 8:
+                (u,) = struct.unpack_from(">H", raw, 1)
+                self._string.setdefault(u, idx)
+            elif tag == 12:
+                n, d = struct.unpack_from(">HH", raw, 1)
+                self._nat.setdefault((n, d), idx)
+            elif tag == 10:
+                c, t = struct.unpack_from(">HH", raw, 1)
+                self._methodref.setdefault((c, t), idx)
+
+    def _append(self, raw: bytes, wide: bool = False) -> int:
+        idx = self._next
+        self.raw_entries.append(raw)
+        if wide:
+            self.raw_entries.append(None)
+        self._next += 2 if wide else 1
+        return idx
+
+    def utf8(self, s: str) -> int:
+        if s in self._by_utf8:
+            return self._by_utf8[s]
+        data = s.encode("utf-8")
+        idx = self._append(bytes([1]) + struct.pack(">H", len(data)) + data)
+        self._by_utf8[s] = idx
+        self.utf8s[idx] = s
+        return idx
+
+    def class_ref(self, internal: str) -> int:
+        u = self.utf8(internal)
+        if u in self._class:
+            return self._class[u]
+        idx = self._append(bytes([7]) + struct.pack(">H", u))
+        self._class[u] = idx
+        return idx
+
+    def string(self, s: str) -> int:
+        u = self.utf8(s)
+        if u in self._string:
+            return self._string[u]
+        idx = self._append(bytes([8]) + struct.pack(">H", u))
+        self._string[u] = idx
+        return idx
+
+    def nat(self, name: str, desc: str) -> int:
+        n, d = self.utf8(name), self.utf8(desc)
+        key = (n, d)
+        if key in self._nat:
+            return self._nat[key]
+        idx = self._append(bytes([12]) + struct.pack(">HH", n, d))
+        self._nat[key] = idx
+        return idx
+
+    def methodref(self, internal: str, name: str, desc: str) -> int:
+        c = self.class_ref(internal)
+        t = self.nat(name, desc)
+        key = (c, t)
+        if key in self._methodref:
+            return self._methodref[key]
+        idx = self._append(bytes([10]) + struct.pack(">HH", c, t))
+        self._methodref[key] = idx
+        return idx
+
+    def emit(self) -> bytes:
+        out = [b"", b""]
+        for e in self.raw_entries:
+            if e is not None:
+                out.append(e)
+        return b"".join(out), self._next
+
+
+def stub_class_method_bodies(class_bytes: bytes) -> bytes:
+    """把单个 .class 的方法体打成标准 SDK stub 形态（幂等）。
+
+    <init>：保留到首条 INVOKESPECIAL（super()）为止的前缀后接 throw stub；
+    其余方法（含 <clinit>）：整体替换为 throw new RuntimeException("Stub!")。
+    exception table 与 Code 子属性（StackMapTable/LineNumberTable 等）全部清空。
+    """
+    if class_bytes[:4] != b"\xca\xfe\xba\xbe":
+        raise BuildError("stub_class_method_bodies: not a class file")
+    off = 8
+    cp_count = struct.unpack_from(">H", class_bytes, off)[0]
+    off += 2
+    utf8s: dict[int, str] = {}
+    raw_entries: list[bytes] = []
+    i = 1
+    while i < cp_count:
+        start = off
+        tag = class_bytes[off]
+        off += 1
+        wide = False
+        if tag == 1:
+            ln = struct.unpack_from(">H", class_bytes, off)[0]
+            off += 2 + ln
+            utf8s[i] = class_bytes[start + 3:start + 3 + ln].decode("utf-8", errors="replace")
+        elif tag in (7, 8, 16, 19, 20):
+            off += 2
+        elif tag in (3, 4, 9, 10, 11, 12, 17, 18):
+            off += 4
+        elif tag == 15:
+            off += 4   # MethodHandle: u1 kind + u2 index（额外 3 字节 + tag）
+        elif tag in (5, 6):
+            off += 8
+            wide = True
+        else:
+            raise BuildError(f"stub_class_method_bodies: unknown cp tag {tag}")
+        raw_entries.append(class_bytes[start:off])
+        if wide:
+            raw_entries.append(None)
+            i += 2
+        else:
+            i += 1
+    tail_start = off  # access/this/super/interfaces/fields/methods/attrs
+    cp = _ClassCp(b"", cp_count, utf8s)
+    cp.seed(raw_entries)
+
+    # 头部（access/this/super + interfaces）原样保留
+    off += 6
+    ifc_n = struct.unpack_from(">H", class_bytes, off)[0]
+    head_end = off + 2 + ifc_n * 2
+
+    def skip_attrs(o: int) -> int:
+        n = struct.unpack_from(">H", class_bytes, o)[0]
+        o += 2
+        for _ in range(n):
+            o += 2
+            ln = struct.unpack_from(">I", class_bytes, o)[0]
+            o += 4 + ln
+        return o
+
+    off = head_end
+    nfields = struct.unpack_from(">H", class_bytes, off)[0]
+    o = off + 2
+    for _ in range(nfields):
+        o += 6
+        o = skip_attrs(o)
+    fields_end = o
+
+    nmeth = struct.unpack_from(">H", class_bytes, fields_end)[0]
+    o = fields_end + 2
+    method_blocks: list[bytes] = []
+    changed = False
+
+    def stub_code(method_name: str, code: bytes, max_stack: int, max_locals: int) -> bytes:
+        str_idx = cp.string(_STUB_MARKER)
+        ldc = (b"\x12" + struct.pack(">B", str_idx)) if str_idx <= 0xff \
+            else (b"\x13" + struct.pack(">H", str_idx))
+        thr = (b"\xbb" + struct.pack(">H", cp.class_ref("java/lang/RuntimeException"))
+               + b"\x59"
+               + ldc
+               + b"\xb7" + struct.pack(">H", cp.methodref(
+                   "java/lang/RuntimeException", "<init>", "(Ljava/lang/String;)V"))
+               + b"\xbf")
+        if method_name == "<init>":
+            end = _first_invokespecial_end(code)
+            new_code = (code[:end] + thr) if end is not None else thr
+        else:
+            new_code = thr
+        body = struct.pack(">HHI", max(max_stack, 3), max_locals, len(new_code)) \
+            + new_code + struct.pack(">H", 0) + struct.pack(">H", 0)
+        return struct.pack(">HI", cp.utf8("Code"), len(body)) + body
+
+    for _ in range(nmeth):
+        start = o
+        _acc, name_idx, _desc = struct.unpack_from(">HHH", class_bytes, o)
+        o += 6
+        nattr = struct.unpack_from(">H", class_bytes, o)[0]
+        o += 2
+        method_name = utf8s.get(name_idx, "")
+        new_attrs: list[bytes] = []
+        method_changed = False
+        for _ in range(nattr):
+            astart = o
+            ani = struct.unpack_from(">H", class_bytes, o)[0]
+            aln = struct.unpack_from(">I", class_bytes, o + 2)[0]
+            aend = o + 6 + aln
+            if utf8s.get(ani) == "Code":
+                max_stack, max_locals = struct.unpack_from(">HH", class_bytes, o + 6)
+                clen = struct.unpack_from(">I", class_bytes, o + 10)[0]
+                code = class_bytes[o + 14:o + 14 + clen]
+                exc_len = struct.unpack_from(">H", class_bytes, o + 14 + clen)[0]
+                sub_off = o + 14 + clen + 2 + exc_len * 8
+                sub_n = struct.unpack_from(">H", class_bytes, sub_off)[0]
+                rebuilt = stub_code(method_name, code, max_stack, max_locals)
+                if (exc_len == 0 and sub_n == 0
+                        and rebuilt == class_bytes[astart:aend]):
+                    new_attrs.append(class_bytes[astart:aend])
+                else:
+                    new_attrs.append(rebuilt)
+                    method_changed = True
+            else:
+                new_attrs.append(class_bytes[astart:aend])
+            o = aend
+        changed = changed or method_changed
+        block = class_bytes[start:start + 6] + struct.pack(">H", len(new_attrs)) \
+            + b"".join(new_attrs)
+        method_blocks.append(block)
+
+    attrs_start = o
+    tail = class_bytes[tail_start:head_end] + class_bytes[head_end:fields_end] \
+        + struct.pack(">H", nmeth) + b"".join(method_blocks) \
+        + class_bytes[attrs_start:]
+    if not changed:
+        return class_bytes
+    cp_bytes, new_count = cp.emit()
+    header = struct.pack(">IHH", 0xCAFEBABE,
+                         *struct.unpack_from(">HH", class_bytes, 4)) \
+        + struct.pack(">H", new_count) + cp_bytes
+    return header + tail
+
+
+def stub_jar_method_bodies(jar_bytes: bytes) -> bytes:
+    """对 jar 内全部真实 .class（CAFEBABE 魔数）执行 stub_class_method_bodies
+    （幂等、确定性输出）；非 class 字节的 .class 条目原样透传。"""
+    entries = {n: d for n, d in _read_unique_entries_bytes(jar_bytes).items()}
+    for name in list(entries):
+        if name.endswith(".class") and entries[name][:4] == b"\xca\xfe\xba\xbe":
+            entries[name] = stub_class_method_bodies(entries[name])
+    return _write_deterministic_zip(entries)
+
+
+def _read_unique_entries_bytes(jar_bytes: bytes) -> dict[str, bytes]:
+    out: dict[str, bytes] = {}
+    with zipfile.ZipFile(io.BytesIO(jar_bytes), "r") as zf:
+        for name in zf.namelist():
+            if name in out:
+                raise BuildError(f"duplicate zip entry: {name}")
+            out[name] = zf.read(name)
+    return out
+
+
 def compose_android_jar(base_jar: Path, framework_jar: Path,
                         framework_res_apk: Path,
                         bridge: dict[str, bytes]) -> bytes:
@@ -402,6 +718,9 @@ def compose_android_jar(base_jar: Path, framework_jar: Path,
         if _is_resource_entry(name):
             entries[name] = data
     _apply_bridge(entries, bridge)
+    for name in list(entries):
+        if name.endswith(".class") and entries[name][:4] == b"\xca\xfe\xba\xbe":
+            entries[name] = stub_class_method_bodies(entries[name])
     return _write_deterministic_zip(entries)
 
 

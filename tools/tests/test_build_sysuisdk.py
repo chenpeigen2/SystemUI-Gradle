@@ -7,6 +7,7 @@ The official SDK platforms (android-37.0, android-SysUISdk) and the AOSP tree
 are NEVER touched.
 """
 import os
+import struct
 import sys
 import tempfile
 import unittest
@@ -31,8 +32,26 @@ def _make_zip(path: Path, entries: dict) -> None:
 
 
 def _fake_class(tag: str) -> bytes:
-    """Deterministic fake class bytes for a fixture entry."""
-    return b"\xCA\xFE\xBA\xBE" + tag.encode("utf-8")
+    """Deterministic minimal class bytes for a fixture entry.
+
+    tag 以常量池 Utf8 条目留存；类无方法体，body-stub 遍对它是 no-op，
+    组合测试的字节级断言不受打桩影响。
+    """
+    t = tag.encode("utf-8")
+
+    def utf8(s: bytes) -> bytes:
+        return b"\x01" + struct.pack(">H", len(s)) + s
+
+    cp = b"".join([
+        utf8(t),                              # 1: tag marker
+        utf8(b"java/lang/Object"),            # 2
+        b"\x07" + struct.pack(">H", 2),      # 3: Class java/lang/Object
+        utf8(b"Fixture"),                     # 4
+        b"\x07" + struct.pack(">H", 4),      # 5: Class Fixture
+    ])
+    out = b"\xCA\xFE\xBA\xBE" + struct.pack(">HHH", 0, 52, 6) + cp
+    out += struct.pack(">HHHHHHH", 0x21, 5, 3, 0, 0, 0, 0)
+    return out
 
 
 _BASE_PKG_XML = """\

@@ -75,5 +75,17 @@ JavaCompile 保留真实字节码）。
 - `MethodHandle`(tag 15) 非 wide 条目；class Utf8 为 modified UTF-8（0xC0 NUL 编码）需容错解码
 - tail 拼接一度把字段区写成方法区（由 ASM 实测 AIOOBE 逮住）
 
-**状态**：本机 `android-SysUISdk/android.jar` 已修复（备份 `android.jar.pre-stub-bak`）；
+**状态**：本机 `android-SysUISdk/android.jar` 已修复（备份已移至 `platforms/android-SysUISdk-pre-stub-bak.jar`）；
 `build_sysuisdk.py` 后续生成均自带打桩，AS 同步已可解析。
+
+**编译验证（worker 2026-09-30 复核，仅验证零改动）**：
+
+- `./gradlew test`（原失败路径：全模块 androidApis/mockable jar 解析）BUILD SUCCESSFUL，
+  首跑 37s + 复跑 17s 可重复，零 MockableJarTransform 错误
+- `./gradlew :SystemUI-core:compileDebugKotlin` BUILD SUCCESSFUL（全链路 UP-TO-DATE）
+- 物证：Gradle transforms 缓存内已生成 mockable 产物，`javap` 反汇编
+  `android.icu.text.SimpleDateFormat`（原失败涉及的合并类）为标准 stub 形态——
+  COMPUTE_FRAMES 真实跑通而非缓存空转
+- `tools/tests/` 基线不变（322 passed / 38 既有 AOSP 树依赖的环境失败）
+- 残余：未做删 transforms 缓存的冷启验证（需授权）；全仓无单测源码，
+  `gradlew test` 验证的是编译/解析链路本身
